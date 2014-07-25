@@ -2,7 +2,7 @@
  *	Tiny - A simple, interative HTTP/1.0 Web Sever that uses
  *		the GET method to serve static and dynamic content.
  */
- 
+
 #include <iostream>
 #include <cstring>
 #include <cstdio>
@@ -14,13 +14,18 @@
 #include <sys/mman.h>	/* mmap() */
 #include <sys/wait.h>	/* wait() */
 #include <fcntl.h>		/* open() */
+#include <pthread.h>
 #include "rio.h"
+#include "sbuf.h"
 
 using namespace std;
 
 const int MAXLINE = 4096;
 const int MAXBUF = 8192;
+const int SBUFSIZE = 32;
+const int THREADNUMBER = 8;
 
+void* thread(void *arg);
 void doIt(int fd);
 void readRequestHdrs(rio_t *pRio);
 int parseURI(char *uri, char *filename, char *cgiArgs);
@@ -30,31 +35,49 @@ void serveDynamic(int fd, char *filename, char *cgiArgs);
 void clientError(int fd, char *cause, char *errCode, char *shortMsg, char *longMsg);
 int open_listenfd(int port);
 
+sbuf_t sbuf;
+
 int main(int argc, char **argv)
-{
- 	int fdListen, fdConnect, port;
+{ 	
+	/* Check command line argments */
+	if (argc != 2)
+	{
+		cout << "usage: " << argv[0] << "<port>" << endl;
+		return -1;
+	}
+
+ 	int port = atoi(argv[1]);
+	int fdListen = open_listenfd(port);
+	
+	pthread_t tid;
+	sbuf_init(&sbuf, SBUFSIZE);
+	for (int i = 0; i < THREADNUMBER; i++)
+	{	/* Create worker threads */
+		pthread_create(&tid, NULL, thread, NULL);
+	}
+
  	sockaddr_in addrClient;
- 	
- 	/* Check command line argments */
- 	if (argc != 2)
- 	{
- 		cout << "usage: " << argv[0] << "<port>" << endl;
- 		return -1;
- 	}
- 	
- 	port = atoi(argv[1]);
- 	
- 	fdListen = open_listenfd(port);
- 	
+ 	unsigned int len = sizeof(addrClient);
  	while (1)
  	{
- 		unsigned int len = sizeof(addrClient);
- 		fdConnect = accept(fdListen, (sockaddr *)&addrClient, &len);
- 		doIt(fdConnect);
- 		close(fdConnect);
+ 		int fdConnect = accept(fdListen, (sockaddr *)&addrClient, &len);
+ 		sbuf_insert(&sbuf, fdConnect);		/* Insert fdConnect into buffer */
  	} 	
  	
 	return 0;
+}
+
+void* thread(void *arg)
+{
+	pthread_detach(pthread_self());
+	while (1)
+	{
+		int fdConnect = sbuf_remove(&sbuf);	/* Remove fdConnect from buffer */
+		doIt(fdConnect);					/* Serve Client */
+ 		close(fdConnect);
+	}
+	
+	return NULL;
 }
 
 void doIt(int fd)
